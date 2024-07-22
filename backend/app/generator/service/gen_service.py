@@ -9,6 +9,8 @@ from typing import Sequence
 
 import aiofiles
 
+from pydantic.alias_generators import to_pascal
+
 from backend.app.generator.crud.crud_gen import gen_dao
 from backend.app.generator.crud.crud_gen_business import gen_business_dao
 from backend.app.generator.crud.crud_gen_model import gen_model_dao
@@ -17,7 +19,7 @@ from backend.app.generator.schema.gen_business import CreateGenBusinessParam
 from backend.app.generator.schema.gen_model import CreateGenModelParam
 from backend.app.generator.service.gen_business_service import gen_business_service
 from backend.app.generator.service.gen_model_service import gen_model_service
-from backend.common.enums import GenModelType
+from backend.common.enums import GenModelColumnType
 from backend.common.exception import errors
 from backend.core.path_conf import BasePath
 from backend.database.db_mysql import async_db_session
@@ -47,6 +49,9 @@ class GenService:
             table_info = await gen_dao.get_table(db, table_name)
             if not table_info:
                 raise errors.NotFoundError(msg='数据库表不存在')
+            business_info = await gen_business_dao.get_by_name(db, table_name)
+            if business_info:
+                raise errors.ForbiddenError(msg='已存在相同数据库表业务')
             table_name = table_info[0]
             business_data = {
                 'app_name': app,
@@ -60,14 +65,14 @@ class GenService:
             await db.flush()
             column_info = await gen_dao.get_all_columns(db, table_schema, table_name)
             for column in column_info:
-                column_type = column[-1].split('(')[0].lower()
+                column_type = column[-1].split('(')[0].upper()
                 model_data = {
                     'name': column[0],
                     'comment': column[-2],
                     'type': column_type,
                     'sort': column[-3],
                     'length': column[-1].split('(')[1][:-1]
-                    if column_type == GenModelType.CHAR or column_type == GenModelType.VARCHAR
+                    if column_type == GenModelColumnType.CHAR or column_type == GenModelColumnType.VARCHAR
                     else 0,
                     'is_pk': column[1],
                     'is_nullable': column[2],
@@ -114,23 +119,48 @@ class GenService:
                 code_folder = Path(str(code_filepath)).parent
                 if not code_folder.exists():
                     code_folder.mkdir(parents=True, exist_ok=True)
+                # 写入 init 文件
+                init_filepath = code_folder.joinpath('__init__.py')
+                if not init_filepath.exists():
+                    async with aiofiles.open(init_filepath, 'w', encoding='utf-8') as f:
+                        await f.write(gen_template.init_content)
+                # 写入代码文件呢
                 async with aiofiles.open(code_filepath, 'w', encoding='utf-8') as f:
                     await f.write(code)
+                # model init 文件补充
+                if code_folder.name == 'model':
+                    async with aiofiles.open(init_filepath, 'a', encoding='utf-8') as f:
+                        await f.write(
+                            f'from backend.app.{business.app_name}.model.{business.table_name_en} '
+                            f'import {to_pascal(business.table_name_en)}\n',
+                        )
 
     async def download(self, *, pk: int) -> io.BytesIO:
         async with async_db_session() as db:
             business = await gen_business_dao.get(db, pk)
             if not business:
                 raise errors.NotFoundError(msg='业务不存在')
-        bio = io.BytesIO()
-        zf = zipfile.ZipFile(bio, 'w')
-        tpl_code_map = await self.render_tpl_code(business=business)
-        for tpl_path, code in tpl_code_map.items():
-            new_code_path = gen_template.get_code_gen_path(tpl_path, business)
-            zf.writestr(new_code_path, code)
-        zf.close()
-        bio.seek(0)
-        return bio
+            bio = io.BytesIO()
+            zf = zipfile.ZipFile(bio, 'w')
+            tpl_code_map = await self.render_tpl_code(business=business)
+            for tpl_path, code in tpl_code_map.items():
+                # 写入代码文件
+                new_code_path = gen_template.get_code_gen_path(tpl_path, business)
+                zf.writestr(new_code_path, code)
+                # 写入 init 文件
+                init_filepath = os.path.join(*new_code_path.split('/')[:-1], '__init__.py')
+                if 'model' not in new_code_path.split('/'):
+                    zf.writestr(init_filepath, gen_template.init_content)
+                else:
+                    zf.writestr(
+                        init_filepath,
+                        f'{gen_template.init_content}'
+                        f'from backend.app.{business.app_name}.model.{business.table_name_en} '
+                        f'import {to_pascal(business.table_name_en)}\n',
+                    )
+            zf.close()
+            bio.seek(0)
+            return bio
 
 
 gen_service = GenService()

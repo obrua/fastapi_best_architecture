@@ -11,11 +11,13 @@ class GenTemplate:
     def __init__(self):
         self.env = Environment(
             loader=FileSystemLoader(JINJA2_TEMPLATE_DIR),
-            autoescape=select_autoescape(['html', 'xml', 'jinja']),
+            autoescape=select_autoescape(enabled_extensions=['jinja']),
             trim_blocks=True,
             lstrip_blocks=True,
+            keep_trailing_newline=True,
             enable_async=True,
         )
+        self.init_content = '#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n'
 
     def get_template(self, jinja_file: str) -> Template:
         """
@@ -69,13 +71,6 @@ class GenTemplate:
         :param models:
         :return:
         """
-        # python 类型对应的 sqlalchemy 类型
-        model_type_mapping = {
-            'str': 'String',
-            'float': 'Float',
-            'int': 'Integer',
-            'bool': 'Boolean',
-        }
         return {
             'app_name': business.app_name,
             'table_name_en': to_snake(business.table_name_en),
@@ -87,7 +82,6 @@ class GenTemplate:
             'have_datetime_column': business.have_datetime_column,
             'permission_sign': str(business.__tablename__.replace('_', ':')),
             'models': models,
-            'model_type_mapping': model_type_mapping,
         }
 
 
